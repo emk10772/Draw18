@@ -4,9 +4,8 @@ import serial
 import time
 
 # ---------------- Setup ------------------------------------------------------------------------------------------------------
-#Image processing
-IMAGE_PATH = "NearnumJahanium.jpg"       # Input images
-#IMAGE_PATH = "scotty.png"
+#Image loading
+IMAGE_PATH = "scotty.png"
 #IMAGE_PATH = "drawing.png"
 APPROX_EPSILON = 0.0001                  # Contour approximation accuracy (fraction of arc length)
 
@@ -24,12 +23,12 @@ BOARD_WIDTH_MM = 490
 BOARD_HEIGHT_MM = 855
 
 # Drawing area
-DRAW_WIDTH_MM = 290
-DRAW_HEIGHT_MM = 375
+DRAW_WIDTH_MM = 200
+DRAW_HEIGHT_MM = 300
 
 #Area offset
-OFFSET_X_MM = 100   #100mm from left string
-OFFSET_Y_MM = 240   #240mm from top of strings
+OFFSET_X_MM = 145   #145mm from left string
+OFFSET_Y_MM = 350   #350mm from top of strings
 
 # --- Load & Threshold Image -------------------------------------------------------------------------------------------------
 img = cv2.imread(IMAGE_PATH, cv2.IMREAD_GRAYSCALE)
@@ -74,50 +73,52 @@ while vector_paths:
 #--- Connecting to Arduino ---------------------------------------------------------------------------------------------------
 ser = serial.Serial(SERIAL_PORT, BAUD, timeout=1)
 time.sleep(2)
-#
-# def send(cmd):
-#     ser.write(cmd.encode())
-#     ser.flush()
-#     start = time.time()
-#     while time.time() - start < 3:  # 8 second timeout
-#         if ser.in_waiting > 0:
-#             line = ser.readline().decode().strip()
-#             if line == "OK":
-#                 return
-#     print(f"Timeout waiting for OK after: {cmd.strip()}")
+
+def send(cmd):
+    ser.write(cmd.encode())
+    ser.flush()
+    start = time.time()
+    while time.time() - start < 5:  # 5 second timeout
+        if ser.in_waiting > 0:
+            line = ser.readline().decode().strip()
+            if line == "OK":
+                return
+    print(f"Timeout waiting for OK after: {cmd.strip()}")
 
 # #--- Start Drawing -----------------------------------------------------------------------------------------------------------
 print("Press ENTER to start drawing or Ctrl+C to cancel")
 input()
 
 # #--- Send Commands -----------------------------------------------------------------------------------------------------------
-# try:
-#     for i, path in enumerate(ordered):
-#         x0, y0 = to_mm(path[0])
-#         # Clamp to drawing area bounds
-#         x0 = np.clip(x0, OFFSET_X_MM, OFFSET_X_MM + DRAW_WIDTH_MM)
-#         y0 = np.clip(y0, OFFSET_Y_MM, OFFSET_Y_MM + DRAW_HEIGHT_MM)
-#
-#         send(PEN_UP)
-#         send(MOVE_CMD.format(x0, y0))
-#         send(PEN_DOWN)
-#
-#         for pt in path[1:]:
-#             x, y = to_mm(pt)
-#             # Clamp to drawing area bounds
-#             x = np.clip(x, OFFSET_X_MM, OFFSET_X_MM + DRAW_WIDTH_MM)
-#             y = np.clip(y, OFFSET_Y_MM, OFFSET_Y_MM + DRAW_HEIGHT_MM)
-#             send(MOVE_CMD.format(x, y))
-#
-# except KeyboardInterrupt:
-#     print("Drawing terminated")
-#     send(PEN_UP)
-#
-# finally:
-#     send(PEN_UP)
-#     ser.close()
-#     print("Drawing finished")
-#
+try:
+    for i, path in enumerate(ordered):
+        x0, y0 = to_mm(path[0])
+        # Clamp to drawing area bounds
+        x0 = np.clip(x0, OFFSET_X_MM, OFFSET_X_MM + DRAW_WIDTH_MM)
+        y0 = np.clip(y0, OFFSET_Y_MM, OFFSET_Y_MM + DRAW_HEIGHT_MM)
+
+        send(PEN_UP)
+        send(MOVE_CMD.format(x0, y0))
+        send(PEN_DOWN)
+
+        for pt in path[1:]:
+            x, y = to_mm(pt)
+            # Clamp to drawing area bounds
+            x = np.clip(x, OFFSET_X_MM, OFFSET_X_MM + DRAW_WIDTH_MM)
+            y = np.clip(y, OFFSET_Y_MM, OFFSET_Y_MM + DRAW_HEIGHT_MM)
+            send(MOVE_CMD.format(x, y))
+
+except KeyboardInterrupt:
+    print("Drawing terminated")
+    send(PEN_UP)
+
+finally:
+    send(PEN_UP)
+    send(MOVE_CMD.format(OFFSET_X_MM,OFFSET_Y_MM+DRAW_HEIGHT_MM))
+    send(PEN_UP)
+    ser.close()
+    print("Drawing finished")
+
 
 #--- Preview Path ------------------------------------------------------------------------------------------------------------
 canvas = np.zeros_like(img)
