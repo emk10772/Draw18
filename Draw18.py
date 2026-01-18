@@ -3,74 +3,144 @@ import numpy as np
 import serial
 import time
 
-# ---------------- Setup ------------------------------------------------------------------------------------------------------
-#Image loading
-IMAGE_PATH = "scotty.png"
+# ---------------- Setup ---------------------------------------------------------------------------------------------------------------------------------------
 #IMAGE_PATH = "drawing.png"
-APPROX_EPSILON = 0.0001                  # Contour approximation accuracy (fraction of arc length)
-
-#Arduino connection
-SERIAL_PORT = "COM3"                     # Arduino COM port
+#IMAGE_PATH = "scotty.webp"
+IMAGE_PATH = "NearnumJahanian.jpg"
+#IMAGE_PATH = "build18.jpg"
+SERIAL_PORT = "COM3"
 BAUD = 115200
 
-#Commands
+# Commands
 PEN_UP = "PEN_UP\n"
 PEN_DOWN = "PEN_DOWN\n"
 MOVE_CMD = "MOVE {:.2f} {:.2f}\n"
 
-# Whiteboard dimensions
-BOARD_WIDTH_MM = 490
-BOARD_HEIGHT_MM = 855
+# Board Dimensions
+BOARD_WIDTH_MM = 508
+BOARD_HEIGHT_MM = 864
+DRAW_WIDTH_MM = 254
+DRAW_HEIGHT_MM = 241
+OFFSET_X_MM = 127
+OFFSET_Y_MM = 419
 
-# Drawing area
-DRAW_WIDTH_MM = 200
-DRAW_HEIGHT_MM = 300
+# --- Edge Detection & Pixel Following -------------------------------------------------------------------------------------------------------------------------
 
-#Area offset
-OFFSET_X_MM = 145   #145mm from left string
-OFFSET_Y_MM = 350   #350mm from top of strings
-
-# --- Load & Threshold Image -------------------------------------------------------------------------------------------------
+# Import image
 img = cv2.imread(IMAGE_PATH, cv2.IMREAD_GRAYSCALE)
 h, w = img.shape
+
+# Threshold
 binary = cv2.adaptiveThreshold(img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 9, 10)
 
-#--- Extract Contours --------------------------------------------------------------------------------------------------------
-contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+# Thin to skeleton
+thinned = cv2.ximgproc.thinning(binary, thinningType=cv2.ximgproc.THINNING_ZHANGSUEN)
 
-#--- Vectorization -----------------------------------------------------------------------------------------------------------
+
+# Find endpoints and junctions
+def get_neighbors(y, x, img):
+    neighbors = []
+    for dy in [-1, 0, 1]:
+        for dx in [-1, 0, 1]:
+            if dy == 0 and dx == 0:
+                continue
+            ny, nx = y + dy, x + dx
+            if 0 <= ny < img.shape[0] and 0 <= nx < img.shape[1]:
+                neighbors.append((ny, nx, img[ny, nx]))
+    return neighbors
+
+# Line tracing (Finds next unvisited white pixel)
+def trace_line(start_y, start_x, skeleton, visited):
+    path = [(start_x, start_y)]
+    visited[start_y, start_x] = True
+
+    current_y, current_x = start_y, start_x
+
+    while True:
+        # Find next unvisited neighbor
+        neighbors = get_neighbors(current_y, current_x, skeleton)
+        next_point = None
+
+        for ny, nx, val in neighbors:
+            if val > 0 and not visited[ny, nx]:
+                next_point = (ny, nx)
+                break
+
+        if next_point is None:
+            break  # End of line
+
+        current_y, current_x = next_point
+        path.append((current_x, current_y))  # (x, y)
+        visited[current_y, current_x] = True
+
+    return path
+
+
+# Extract paths by tracing skeleton
+visited = np.zeros_like(thinned, dtype=bool)
 vector_paths = []
 
-for contour in contours:
-    epsilon = APPROX_EPSILON * cv2.arcLength(contour, True)
-    approx = cv2.approxPolyDP(contour, epsilon, True)
-    approx = approx.reshape(-1, 2)
-    vector_paths.append(approx)
+# Find all white pixels
+white_pixels = np.argwhere(thinned > 0)
 
-#--- Scaling image -----------------------------------------------------------------------------------------------------------
+for y, x in white_pixels:
+    if not visited[y, x]:
+        path = trace_line(y, x, thinned, visited)
+        if len(path) > 5:  # Filter short paths
+            vector_paths.append(np.array(path))
+
+# Simplify paths using Douglas-Peucker
+simplified_paths = []
+for path in vector_paths:
+    # Convert to format OpenCV expects
+    path_reshaped = path.reshape(-1, 1, 2).astype(np.float32)
+    epsilon = 0.01 # Smaller epsilon = More precise image
+    approx = cv2.approxPolyDP(path_reshaped, epsilon, False)
+    approx = approx.reshape(-1, 2)
+
+    if len(approx) >= 2:
+        simplified_paths.append(approx)
+
+# --- Scaling ---------------------------------------------------------------------------------------------------------------------------------------------------
 SCALE_X = DRAW_WIDTH_MM / w
 SCALE_Y = DRAW_HEIGHT_MM / h
-SCALE = min(SCALE_X, SCALE_Y)  # Keep aspect ratio
+SCALE = min(SCALE_X, SCALE_Y)
 
 def to_mm(pt):
     x = (pt[0] * SCALE) + OFFSET_X_MM
     y = (pt[1] * SCALE) + OFFSET_Y_MM
     return x, y
 
-#--- Ordering ----------------------------------------------------------------------------------------------------------------
+# --- Ordering -------------------------------------------------------------------------------------------------------------------------------------------------
 ordered = []
-while vector_paths:
-    if not ordered:
-        ordered.append(vector_paths.pop(0))
-    else:
+remaining = simplified_paths.copy()
+
+if remaining:
+    ordered.append(remaining.pop(0))
+
+    while remaining:
         last = ordered[-1]
         idx = min(
-            range(len(vector_paths)),
-            key=lambda i: np.linalg.norm(last[-1] - vector_paths[i][0])
+            range(len(remaining)),
+            key=lambda i: np.linalg.norm(last[-1] - remaining[i][0])
         )
-        ordered.append(vector_paths.pop(idx))
+        ordered.append(remaining.pop(idx))
 
-#--- Connecting to Arduino ---------------------------------------------------------------------------------------------------
+print(f"Ordered {len(ordered)} paths")
+
+# --- Preview ---------------------------------------------------------------------------------------------------------------------------------------------------
+canvas = np.zeros_like(img)
+
+for path in ordered:
+    for i in range(len(path) - 1):
+        pt1 = tuple(path[i].astype(int))
+        pt2 = tuple(path[i + 1].astype(int))
+        cv2.line(canvas, pt1, pt2, 255, 1)
+
+cv2.imshow("Traced Paths - Press any key", canvas)
+
+# --- Arduino Connection ----------------------------------------------------------------------------------------------------------------------------------------
+print("Connecting to Arduino...")
 ser = serial.Serial(SERIAL_PORT, BAUD, timeout=1)
 time.sleep(2)
 
@@ -78,22 +148,21 @@ def send(cmd):
     ser.write(cmd.encode())
     ser.flush()
     start = time.time()
-    while time.time() - start < 5:  # 5 second timeout
+    while time.time() - start < 5:
         if ser.in_waiting > 0:
-            line = ser.readline().decode().strip()
-            if line == "OK":
+            if ser.readline().decode().strip() == "OK":
                 return
-    print(f"Timeout waiting for OK after: {cmd.strip()}")
 
-# #--- Start Drawing -----------------------------------------------------------------------------------------------------------
-print("Press ENTER to start drawing or Ctrl+C to cancel")
+print("Press ENTER to start drawing")
 input()
 
-# #--- Send Commands -----------------------------------------------------------------------------------------------------------
+# --- Drawing ---------------------------------------------------------------------------------------------------------------------------------------------------
 try:
     for i, path in enumerate(ordered):
+        if len(path) < 2:
+            continue
+
         x0, y0 = to_mm(path[0])
-        # Clamp to drawing area bounds
         x0 = np.clip(x0, OFFSET_X_MM, OFFSET_X_MM + DRAW_WIDTH_MM)
         y0 = np.clip(y0, OFFSET_Y_MM, OFFSET_Y_MM + DRAW_HEIGHT_MM)
 
@@ -103,38 +172,16 @@ try:
 
         for pt in path[1:]:
             x, y = to_mm(pt)
-            # Clamp to drawing area bounds
             x = np.clip(x, OFFSET_X_MM, OFFSET_X_MM + DRAW_WIDTH_MM)
             y = np.clip(y, OFFSET_Y_MM, OFFSET_Y_MM + DRAW_HEIGHT_MM)
             send(MOVE_CMD.format(x, y))
 
 except KeyboardInterrupt:
-    print("Drawing terminated")
+    print("\nTerminated")
     send(PEN_UP)
 
 finally:
     send(PEN_UP)
-    send(MOVE_CMD.format(OFFSET_X_MM,OFFSET_Y_MM+DRAW_HEIGHT_MM))
-    send(PEN_UP)
+    send(MOVE_CMD.format(254, 660))
     ser.close()
     print("Drawing finished")
-
-
-#--- Preview Path ------------------------------------------------------------------------------------------------------------
-canvas = np.zeros_like(img)
-
-def as_point(pt):
-    return int(pt[0]), int(pt[1])
-
-for path in ordered:
-    path = np.array(path)
-    if len(path) < 2:
-        continue
-    for i in range(len(path)):
-        pt1 = as_point(path[i])
-        pt2 = as_point(path[(i + 1) % len(path)])  # wrap around for closed contour
-        cv2.line(canvas, pt1, pt2, 255, 1)
-
-cv2.imshow("Vectorized Preview", canvas)
-cv2.waitKey(0)
-cv2.destroyAllWindows()
