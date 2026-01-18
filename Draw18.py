@@ -4,10 +4,14 @@ import serial
 import time
 
 # ---------------- Setup ---------------------------------------------------------------------------------------------------------------------------------------
+
+# Images
 #IMAGE_PATH = "drawing.png"
-#IMAGE_PATH = "scotty.webp"
-IMAGE_PATH = "NearnumJahanian.jpg"
+IMAGE_PATH = "scotty.webp"
+#IMAGE_PATH = "NearnumJahanian.jpg"
 #IMAGE_PATH = "build18.jpg"
+
+# Arduino
 SERIAL_PORT = "COM3"
 BAUD = 115200
 
